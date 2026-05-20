@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
+
+  build:
+    name: Build ${{ matrix.asset_os }} ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            asset_os: linux
+            goarch: amd64
+            archive: tar.gz
+          - goos: linux
+            asset_os: linux
+            goarch: arm64
+            archive: tar.gz
+          - goos: darwin
+            asset_os: macos
+            goarch: amd64
+            archive: tar.gz
+          - goos: darwin
+            asset_os: macos
+            goarch: arm64
+            archive: tar.gz
+          - goos: windows
+            asset_os: windows
+            goarch: amd64
+            archive: zip
+          - goos: windows
+            asset_os: windows
+            goarch: arm64
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ github.ref_name }}
+          ASSET_OS: ${{ matrix.asset_os }}
+        run: |
+          set -euo pipefail
+
+          binary_name="costrict-router"
+          if [ "$GOOS" = "windows" ]; then
+            binary_name="costrict-router.exe"
+          fi
+
+          package_name="costrict-router_${VERSION}_${ASSET_OS}_${GOARCH}"
+          mkdir -p "build/${package_name}" dist
+
+          go build -trimpath -o "build/${package_name}/${binary_name}" ./cmd/costrict-router
+
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            (cd "build/${package_name}" && zip -9 "../../dist/${package_name}.zip" "${binary_name}")
+          else
+            (cd "build/${package_name}" && tar -czf "../../dist/${package_name}.tar.gz" "${binary_name}")
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.asset_os }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            gh release upload "${VERSION}" dist/* --clobber
+          else
+            gh release create "${VERSION}" dist/* \
+              --title "${VERSION}" \
+              --notes "Release ${VERSION}"
+          fi

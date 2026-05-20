@@ -28,7 +28,17 @@ _单文件 • 跨平台 • 自动续期_
 
 ## 📦 安装
 ### 直接下载
-你可以直接在 **Release** 中下载编译后的可执行程序，直接运行
+你可以直接在 **Release** 中下载编译后的可执行程序，解压后运行：
+
+| 系统 | 架构 | 下载文件 |
+| --- | --- | --- |
+| macOS Apple Silicon | arm64 | `costrict-router_<version>_macos_arm64.tar.gz` |
+| macOS Intel | amd64 | `costrict-router_<version>_macos_amd64.tar.gz` |
+| Linux x86_64 | amd64 | `costrict-router_<version>_linux_amd64.tar.gz` |
+| Linux ARM64 | arm64 | `costrict-router_<version>_linux_arm64.tar.gz` |
+| Windows x86_64 | amd64 | `costrict-router_<version>_windows_amd64.zip` |
+| Windows ARM64 | arm64 | `costrict-router_<version>_windows_arm64.zip` |
+
 ### 自行构建
 ```bash
 go build -o costrict-router ./cmd/costrict-router
