@@ -27,6 +27,7 @@ func (f *fakeTokens) EnsureFreshToken(context.Context) error {
 }
 
 func TestForwardChatAddsCostrictHeaders(t *testing.T) {
+	// 验证聊天转发会改写到真实上游路径，并补齐 CoStrict 必需请求头。
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/chat-rag/api/v1/chat/completions" {
 			t.Fatalf("path = %s", r.URL.Path)
@@ -72,6 +73,7 @@ func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func TestHealthzRedactsTokens(t *testing.T) {
+	// 健康检查响应必须脱敏 token 类字段，避免 status/logs 暴露敏感信息。
 	handler := &Handler{
 		Tokens: &fakeTokens{cfg: config.Config{
 			BaseURL:               "https://example.com",

@@ -17,6 +17,7 @@ type Claims struct {
 }
 
 func DecodeClaims(token string) (Claims, error) {
+	// 只解析 JWT payload，不校验签名；这里用于读取过期时间和用户标识。
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
 		return Claims{}, errors.New("JWT 格式无效")

@@ -38,6 +38,7 @@ func (s *Service) Config() config.Config {
 }
 
 func (s *Service) EnsureFreshToken(ctx context.Context) error {
+	// 请求进入前统一刷新临近过期的 token，并把新 token 回写到配置文件。
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -90,6 +91,7 @@ func (s *Service) StartRefreshLoop(ctx context.Context) {
 }
 
 func (s *Service) nextRefreshDelay() time.Duration {
+	// 根据 access/refresh token 过期时间选择下一次后台刷新检查的等待时间。
 	cfg := s.Config()
 	if !cfg.LoggedIn() {
 		return 24 * time.Hour
@@ -114,6 +116,7 @@ func (s *Service) nextRefreshDelay() time.Duration {
 }
 
 func Run(ctx context.Context, configPath string, cfg config.Config, addr string, logger *logx.Logger) error {
+	// 组装本地 HTTP 服务、代理 handler 和优雅关闭入口，是 serve/start 的公共运行核心。
 	if addr != "" {
 		cfg.ListenAddr = addr
 	}

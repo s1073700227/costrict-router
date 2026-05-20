@@ -61,6 +61,7 @@ func (h *Handler) handleHealth(w http.ResponseWriter) {
 }
 
 func (h *Handler) forward(w http.ResponseWriter, r *http.Request, upstreamPath string) {
+	// 转发前确保 token 可用，再把 OpenAI 兼容路径映射到真实 CoStrict 上游接口。
 	start := time.Now()
 	if err := h.Tokens.EnsureFreshToken(r.Context()); err != nil {
 		writeOpenAIError(w, http.StatusUnauthorized, "authentication_error", err.Error())
@@ -85,6 +86,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, upstreamPath s
 	var body io.Reader = r.Body
 	var bodyBytes []byte
 	if h.Logger != nil && h.Logger.DebugEnabled() && r.Body != nil {
+		// debug 模式才读取请求体用于日志，默认运行不记录用户转发内容。
 		bodyBytes, _ = io.ReadAll(r.Body)
 		body = bytes.NewReader(bodyBytes)
 	}
@@ -131,6 +133,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, upstreamPath s
 }
 
 func applyCostrictHeaders(h http.Header, cfg config.Config, incoming *http.Request) {
+	// 补齐 CoStrict 上游依赖的认证、用户、请求追踪和客户端上下文头。
 	requestID := ids.UUID()
 	taskID := ids.UUID()
 	h.Set("Authorization", "Bearer "+cfg.AccessToken)

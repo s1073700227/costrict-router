@@ -78,6 +78,7 @@ func (p LoginParams) WithDefaults() LoginParams {
 }
 
 func ParseLoginURL(raw string) (LoginParams, error) {
+	// 从插件登录链接中还原服务地址和 OIDC 轮询所需的关键参数。
 	u, err := url.Parse(raw)
 	if err != nil {
 		return LoginParams{}, err
@@ -134,6 +135,7 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (Tokens,
 }
 
 func (c *Client) CheckStatus(ctx context.Context, accessToken string) error {
+	// 登录完成后再次校验服务端状态，避免只拿到 token 但会话未真正生效。
 	rawURL, err := c.buildURL(StatusPath, accessToken == "")
 	if err != nil {
 		return err
@@ -164,6 +166,7 @@ func (c *Client) CheckStatus(ctx context.Context, accessToken string) error {
 }
 
 func (c *Client) requestToken(ctx context.Context, bearer string, includeMachine bool) (Tokens, error) {
+	// 统一处理登录轮询和刷新 token，两种请求只在 bearer 与 machine_code 上有差异。
 	rawURL, err := c.buildURL(TokenPath, includeMachine)
 	if err != nil {
 		return Tokens{}, err
@@ -197,6 +200,7 @@ func (c *Client) requestToken(ctx context.Context, bearer string, includeMachine
 }
 
 func (c *Client) buildURL(path string, includeMachine bool) (string, error) {
+	// 按 CoStrict 插件接口约定拼接查询参数，machine_code 仅在需要时携带。
 	base, err := url.Parse(strings.TrimRight(c.Params.BaseURL, "/"))
 	if err != nil {
 		return "", err

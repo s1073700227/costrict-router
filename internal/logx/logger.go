@@ -62,6 +62,7 @@ func NewFile(path string, debug bool) (*Logger, error) {
 }
 
 func Rotate(path string, maxBytes int64, backups int) error {
+	// 日志超过阈值时按固定备份数滚动，避免长期后台运行撑爆缓存目录。
 	if maxBytes <= 0 || backups <= 0 {
 		return nil
 	}

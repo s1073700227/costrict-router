@@ -19,6 +19,7 @@ func TestParseLoginURL(t *testing.T) {
 }
 
 func TestBuildLoginURL(t *testing.T) {
+	// 校验登录 URL 的路径和核心查询参数，防止插件登录协议被改坏。
 	client := NewClient(LoginParams{
 		BaseURL:     "https://www.abc.com",
 		MachineCode: "m1",
@@ -41,6 +42,7 @@ func TestBuildLoginURL(t *testing.T) {
 }
 
 func TestBuildLoginURLWithGeneratedValuesMatchesAPIDocShape(t *testing.T) {
+	// 生成值必须符合 api.md 抓包形态，避免 machine_code/state 退回 UUID 格式。
 	client := NewClient(LoginParams{
 		BaseURL:     "https://www.abc.com",
 		MachineCode: GenerateMachineCode(),

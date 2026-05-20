@@ -75,6 +75,7 @@ func DefaultPIDPath() (string, error) {
 }
 
 func Load(path string) (*Config, error) {
+	// 加载配置时允许文件不存在，首次运行会返回一份带默认值的配置。
 	if path == "" {
 		var err error
 		path, err = DefaultPath()
@@ -113,6 +114,7 @@ func Default() Config {
 }
 
 func (c *Config) ApplyDefaults() {
+	// 只补齐缺失字段，避免覆盖用户已经持久化的登录参数和偏好配置。
 	if c.Version == 0 {
 		c.Version = 1
 	}
@@ -137,6 +139,7 @@ func (c *Config) ApplyDefaults() {
 }
 
 func (c *Config) Save(path string) error {
+	// 保存时先写临时文件再重命名，降低进程中断造成配置损坏的概率。
 	if path == "" {
 		var err error
 		path, err = DefaultPath()
@@ -189,6 +192,7 @@ func (c *Config) ApplyLoginParams(params auth.LoginParams) {
 }
 
 func (c *Config) ApplyTokens(tokens auth.Tokens) error {
+	// 写入 token 后尽量从 JWT claims 中提取过期时间和用户标识。
 	if tokens.AccessToken == "" || tokens.RefreshToken == "" {
 		return errors.New("token 数据缺少 access_token 或 refresh_token")
 	}
@@ -217,6 +221,7 @@ func (c *Config) LoggedIn() bool {
 }
 
 func ReadTokenFile(path string) (TokenFile, error) {
+	// 兼容顶层 token 字段和接口 envelope.data 字段，方便测试导入真实响应。
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return TokenFile{}, err
