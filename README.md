@@ -28,7 +28,7 @@ _单文件 • 跨平台 • 自动续期_
 
 ## 📦 安装
 ### 直接下载
-你可以直接在 **Release** 中下载编译后的可执行程序，解压后运行：
+你可以直接在 [**Release**](https://github.com/mokeyjay/costrict-router/releases/latest) 中下载编译后的可执行程序，解压后运行：
 
 | 系统 | 架构 | 下载文件 |
 | --- | --- | --- |
