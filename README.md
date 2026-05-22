@@ -62,6 +62,8 @@ costrict-router login --base-url https://www.abc.com
 costrict-router start
 ```
 
+首次启动会生成本地 API Key。请立即保存终端中输出的 `sk-costrict-...`，它只会显示一次。
+
 默认本地地址：
 
 ```text
@@ -75,10 +77,8 @@ http://127.0.0.1:14567/v1
 | 配置项 | 值 |
 | --- | --- |
 | Base URL | `http://127.0.0.1:14567/v1` |
-| API Key | 留空或任意字符串均可 |
+| API Key | 初次启动时输出的 `sk-costrict-...` |
 | Model | 使用 `costrict-router models` 查看 |
-
-> 实际鉴权使用的是本地配置中保存的 CoStrict `access_token`
 
 ## 🧰 命令一览
 
@@ -92,6 +92,7 @@ http://127.0.0.1:14567/v1
 | `restart` | 重启后台服务 | `costrict-router restart` |
 | `logs` | 监看日志 | `costrict-router logs` |
 | `models` | 查看可用模型 | `costrict-router models` |
+| `key reset` | 重置本地 API Key | `costrict-router key reset` |
 
 ## 📚 查看模型
 
@@ -177,6 +178,14 @@ costrict-router serve --debug
 | `--plain` | 去除 ANSI 高亮 |
 | `--log-file` | 指定日志文件 |
 
+### `key reset`
+
+重置本地 API Key。新 key 只会在命令输出中显示一次，配置文件中只保存 hash。
+
+| 参数 | 说明 |
+| --- | --- |
+| `--config` | 指定配置文件路径 |
+
 ## 📁 文件位置
 
 ### 配置文件
@@ -229,7 +238,13 @@ PID:  <os.UserCacheDir>/costrict-router/costrict-router.pid
 | `GET` | `/v1/models` | OpenAI 兼容模型列表 |
 | `GET` | `/healthz` | 本地服务健康检查 |
 
-多数支持 OpenAI Chat Completions 的 Agent 工具，只需要配置本地 Base URL 即可使用。
+`/v1/*` 需要在请求头中携带本地 API Key：
+
+```http
+Authorization: Bearer sk-costrict-...
+```
+
+`/healthz` 当前保持公开，用于本地健康检查和 `status` 命令。
 
 ## ❓ 常见用法
 
@@ -242,8 +257,18 @@ costrict-router start --addr 127.0.0.1:18080
 Agent 工具中对应配置：
 
 ```text
-http://127.0.0.1:18080/v1
+Base URL: http://127.0.0.1:18080/v1
+API Key: sk-costrict-...
 ```
+
+### 重置本地 API Key
+
+```bash
+costrict-router key reset
+costrict-router restart
+```
+
+如果旧 key 已遗失，只能重置生成新的 key；旧 key 会立即失效，正在运行的后台服务需要重启后才会加载新 key。
 
 ### 使用独立配置文件
 

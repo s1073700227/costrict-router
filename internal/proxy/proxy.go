@@ -36,8 +36,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/healthz":
 		h.handleHealth(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
+		if !h.authorizeLocalAPIKey(w, r) {
+			return
+		}
 		h.forward(w, r, "/chat-rag/api/v1/chat/completions")
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
+		if !h.authorizeLocalAPIKey(w, r) {
+			return
+		}
 		h.forward(w, r, "/ai-gateway/api/v1/models")
 	default:
 		writeOpenAIError(w, http.StatusNotFound, "not_found", i18n.T("local route not found", "未找到本地路由"))
@@ -47,17 +53,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleHealth(w http.ResponseWriter) {
 	cfg := h.Tokens.Config()
 	payload := map[string]any{
-		"ok":             cfg.LoggedIn(),
-		"base_url":       cfg.BaseURL,
-		"listen_addr":    cfg.ListenAddr,
-		"machine_code":   config.Redact(cfg.MachineCode),
-		"user_id":        cfg.UserID,
-		"access_token":   config.Redact(cfg.AccessToken),
-		"refresh_token":  config.Redact(cfg.RefreshToken),
-		"access_expires": cfg.AccessTokenExpiresAt,
+		"ok":                       cfg.LoggedIn(),
+		"base_url":                 cfg.BaseURL,
+		"listen_addr":              cfg.ListenAddr,
+		"machine_code":             config.Redact(cfg.MachineCode),
+		"user_id":                  cfg.UserID,
+		"access_token":             config.Redact(cfg.AccessToken),
+		"refresh_token":            config.Redact(cfg.RefreshToken),
+		"access_expires":           cfg.AccessTokenExpiresAt,
+		"local_api_key_configured": cfg.LocalAPIKeyHash != "",
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func (h *Handler) authorizeLocalAPIKey(w http.ResponseWriter, r *http.Request) bool {
+	cfg := h.Tokens.Config()
+	if cfg.LocalAPIKeyHash == "" {
+		writeOpenAIError(w, http.StatusInternalServerError, "configuration_error", i18n.T("local API key is not configured; restart costrict-router to generate one", "本地 API Key 未配置，请重启 costrict-router 生成"))
+		return false
+	}
+	apiKey, ok := bearerToken(r.Header.Get("Authorization"))
+	if !ok || apiKey == "" {
+		writeOpenAIError(w, http.StatusUnauthorized, "authentication_error", i18n.T("missing local API key", "缺少本地 API Key"))
+		return false
+	}
+	if !cfg.VerifyLocalAPIKey(apiKey) {
+		writeOpenAIError(w, http.StatusUnauthorized, "authentication_error", i18n.T("invalid local API key", "本地 API Key 无效"))
+		return false
+	}
+	return true
 }
 
 func (h *Handler) forward(w http.ResponseWriter, r *http.Request, upstreamPath string) {
@@ -203,6 +228,15 @@ func firstHeader(r *http.Request, key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func bearerToken(value string) (string, bool) {
+	scheme, token, ok := strings.Cut(strings.TrimSpace(value), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+	token = strings.TrimSpace(token)
+	return token, token != ""
 }
 
 func (h *Handler) httpClient() *http.Client {

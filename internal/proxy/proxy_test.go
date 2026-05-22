@@ -28,6 +28,7 @@ func (f *fakeTokens) EnsureFreshToken(context.Context) error {
 
 func TestForwardChatAddsCostrictHeaders(t *testing.T) {
 	// 验证聊天转发会改写到真实上游路径，并补齐 CoStrict 必需请求头。
+	apiKey, apiKeyHash := localAPIKeyForTest(t)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/chat-rag/api/v1/chat/completions" {
 			t.Fatalf("path = %s", r.URL.Path)
@@ -47,11 +48,12 @@ func TestForwardChatAddsCostrictHeaders(t *testing.T) {
 
 	handler := &Handler{
 		Tokens: &fakeTokens{cfg: config.Config{
-			BaseURL:      "https://example.com",
-			AccessToken:  "access",
-			RefreshToken: "refresh",
-			MachineCode:  "machine",
-			UserID:       "user",
+			BaseURL:         "https://example.com",
+			AccessToken:     "access",
+			RefreshToken:    "refresh",
+			LocalAPIKeyHash: apiKeyHash,
+			MachineCode:     "machine",
+			UserID:          "user",
 		}},
 		Client: client,
 		Logger: logx.New(&strings.Builder{}, false),
@@ -59,10 +61,97 @@ func TestForwardChatAddsCostrictHeaders(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestForwardRequiresLocalAPIKey(t *testing.T) {
+	// 本地 /v1 入口必须先校验本地 API Key，失败时不能触达上游。
+	apiKey, apiKeyHash := localAPIKeyForTest(t)
+	called := false
+	handler := &Handler{
+		Tokens: &fakeTokens{cfg: config.Config{
+			BaseURL:         "https://example.com",
+			AccessToken:     "access",
+			RefreshToken:    "refresh",
+			LocalAPIKeyHash: apiKeyHash,
+		}},
+		Client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			called = true
+			return nil, nil
+		})},
+	}
+
+	for _, tc := range []struct {
+		name          string
+		authorization string
+	}{
+		{name: "missing"},
+		{name: "wrong", authorization: "Bearer " + apiKey + "x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called = false
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+			if tc.authorization != "" {
+				req.Header.Set("Authorization", tc.authorization)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+			}
+			if called {
+				t.Fatal("upstream was called without a valid local api key")
+			}
+		})
+	}
+}
+
+func TestModelsRequiresLocalAPIKey(t *testing.T) {
+	apiKey, apiKeyHash := localAPIKeyForTest(t)
+	called := false
+	handler := &Handler{
+		Tokens: &fakeTokens{cfg: config.Config{
+			BaseURL:         "https://example.com",
+			AccessToken:     "access",
+			RefreshToken:    "refresh",
+			LocalAPIKeyHash: apiKeyHash,
+		}},
+		Client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			called = true
+			if r.URL.Path != "/ai-gateway/api/v1/models" {
+				t.Fatalf("path = %s", r.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"data":[]}`)),
+			}, nil
+		})},
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status without key = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("upstream was called without a local api key")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status with key = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if !called {
+		t.Fatal("upstream was not called with a valid local api key")
 	}
 }
 
@@ -80,6 +169,7 @@ func TestHealthzRedactsTokens(t *testing.T) {
 			ListenAddr:            "127.0.0.1:14567",
 			AccessToken:           "abcdefghijklmnopqrstuvwxyz",
 			RefreshToken:          "refreshabcdefghijklmnopqrstuvwxyz",
+			LocalAPIKeyHash:       "v1:sha256:salt:digest",
 			MachineCode:           "machineabcdefghijklmnopqrstuvwxyz",
 			AccessTokenExpiresAt:  time.Unix(1893456000, 0),
 			RefreshTokenExpiresAt: time.Unix(1893456000, 0),
@@ -94,4 +184,20 @@ func TestHealthzRedactsTokens(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "abcdefghijklmnopqrstuvwxyz") {
 		t.Fatalf("healthz leaked token-like value: %s", rec.Body.String())
 	}
+	if payload["local_api_key_configured"] != true {
+		t.Fatalf("local_api_key_configured = %v", payload["local_api_key_configured"])
+	}
+}
+
+func localAPIKeyForTest(t *testing.T) (string, string) {
+	t.Helper()
+	apiKey, err := config.GenerateLocalAPIKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := config.HashLocalAPIKey(apiKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return apiKey, hash
 }
