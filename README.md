@@ -138,7 +138,15 @@ costrict-router start --debug
 costrict-router serve --debug
 ```
 
-默认日志只记录程序流程和状态变化，例如启动、停止、刷新 token、上游错误摘要。只有 `--debug` 才会记录转发请求摘要；敏感字段仍会脱敏。
+默认日志只记录程序流程和状态变化，例如启动、停止、刷新 token、上游错误摘要。`--debug` 会记录每次 `/v1/chat/completions` 的对话指标摘要，例如模型、是否流式、状态码、首字节耗时、总耗时、请求/响应字节数和 token usage，不会打印完整 prompt。
+
+如需排查真实请求内容，可以额外开启：
+
+```bash
+costrict-router start --debug-full-request
+```
+
+`--debug-full-request` 会记录脱敏后的转发请求头和截断后的请求体，适合临时排查协议问题，不建议长期后台开启。
 
 ## ⚙️ 常用命令及参数
 
@@ -157,7 +165,8 @@ costrict-router serve --debug
 | --- | --- |
 | `--addr` | 本地监听地址，默认 `127.0.0.1:14567` |
 | `--config` | 指定配置文件路径 |
-| `--debug` | 输出更详细的转发日志 |
+| `--debug` | 输出 `/v1/chat/completions` 对话指标摘要 |
+| `--debug-full-request` | 输出脱敏后的请求头和截断请求体 |
 | `--log-file` | 指定日志文件 |
 
 ### `start`
@@ -166,7 +175,8 @@ costrict-router serve --debug
 | --- | --- |
 | `--addr` | 本地监听地址 |
 | `--config` | 指定配置文件路径 |
-| `--debug` | 后台服务开启 debug 日志 |
+| `--debug` | 后台服务开启对话指标日志 |
+| `--debug-full-request` | 后台服务输出脱敏后的请求头和截断请求体 |
 | `--log-file` | 指定日志文件 |
 | `--pid-file` | 指定 PID 文件 |
 

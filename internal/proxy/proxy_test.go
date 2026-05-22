@@ -155,6 +155,118 @@ func TestModelsRequiresLocalAPIKey(t *testing.T) {
 	}
 }
 
+func TestDebugLogsChatMetricsWithoutRequestBody(t *testing.T) {
+	apiKey, apiKeyHash := localAPIKeyForTest(t)
+	var logs strings.Builder
+	handler := &Handler{
+		Tokens: &fakeTokens{cfg: config.Config{
+			BaseURL:         "https://example.com",
+			AccessToken:     "access",
+			RefreshToken:    "refresh",
+			LocalAPIKeyHash: apiKeyHash,
+		}},
+		Client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(body), "secret prompt") {
+				t.Fatalf("upstream body = %s", body)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)),
+			}, nil
+		})},
+		Logger: logx.New(&logs, true),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test","messages":[{"role":"user","content":"secret prompt"}],"max_tokens":100,"temperature":0.7}`))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	logText := logs.String()
+	if !containsAny(logText, "chat metrics", "对话指标") || !strings.Contains(logText, "gpt-test") || !containsAny(logText, "usage=prompt=10 completion=5 total=15", "token=输入=10 输出=5 总计=15") {
+		t.Fatalf("metrics log missing expected fields: %s", logText)
+	}
+	if strings.Contains(logText, "secret prompt") {
+		t.Fatalf("debug log leaked request body: %s", logText)
+	}
+}
+
+func TestDebugFullRequestLogsRequestBody(t *testing.T) {
+	apiKey, apiKeyHash := localAPIKeyForTest(t)
+	var logs strings.Builder
+	handler := &Handler{
+		Tokens: &fakeTokens{cfg: config.Config{
+			BaseURL:         "https://example.com",
+			AccessToken:     "access",
+			RefreshToken:    "refresh",
+			LocalAPIKeyHash: apiKeyHash,
+		}},
+		Client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+			}, nil
+		})},
+		Logger:           logx.New(&logs, true),
+		DebugFullRequest: true,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test","messages":[{"role":"user","content":"secret prompt"}]}`))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	logText := logs.String()
+	if !strings.Contains(logText, "forward request") || !strings.Contains(logText, "secret prompt") {
+		t.Fatalf("full request log missing request body: %s", logText)
+	}
+}
+
+func TestDebugLogsSSEUsageMetrics(t *testing.T) {
+	apiKey, apiKeyHash := localAPIKeyForTest(t)
+	var logs strings.Builder
+	handler := &Handler{
+		Tokens: &fakeTokens{cfg: config.Config{
+			BaseURL:         "https://example.com",
+			AccessToken:     "access",
+			RefreshToken:    "refresh",
+			LocalAPIKeyHash: apiKeyHash,
+		}},
+		Client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n" +
+				"data: [DONE]\n\n"
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})},
+		Logger: logx.New(&logs, true),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(logs.String(), "true") || !containsAny(logs.String(), "usage=prompt=3 completion=2 total=5", "token=输入=3 输出=2 总计=5") {
+		t.Fatalf("SSE metrics log missing expected fields: %s", logs.String())
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -200,4 +312,13 @@ func localAPIKeyForTest(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	return apiKey, hash
+}
+
+func containsAny(s string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
 }

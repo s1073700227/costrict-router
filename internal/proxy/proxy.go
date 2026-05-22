@@ -26,9 +26,10 @@ type TokenProvider interface {
 }
 
 type Handler struct {
-	Tokens TokenProvider
-	Client *http.Client
-	Logger *logx.Logger
+	Tokens           TokenProvider
+	Client           *http.Client
+	Logger           *logx.Logger
+	DebugFullRequest bool
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -39,12 +40,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !h.authorizeLocalAPIKey(w, r) {
 			return
 		}
-		h.forward(w, r, "/chat-rag/api/v1/chat/completions")
+		h.forward(w, r, "/chat-rag/api/v1/chat/completions", true)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
 		if !h.authorizeLocalAPIKey(w, r) {
 			return
 		}
-		h.forward(w, r, "/ai-gateway/api/v1/models")
+		h.forward(w, r, "/ai-gateway/api/v1/models", false)
 	default:
 		writeOpenAIError(w, http.StatusNotFound, "not_found", i18n.T("local route not found", "未找到本地路由"))
 	}
@@ -85,7 +86,7 @@ func (h *Handler) authorizeLocalAPIKey(w http.ResponseWriter, r *http.Request) b
 	return true
 }
 
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, upstreamPath string) {
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, upstreamPath string, isChatCompletion bool) {
 	// 转发前确保 token 可用，再把 OpenAI 兼容路径映射到真实 CoStrict 上游接口。
 	start := time.Now()
 	if err := h.Tokens.EnsureFreshToken(r.Context()); err != nil {
@@ -110,10 +111,14 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, upstreamPath s
 
 	var body io.Reader = r.Body
 	var bodyBytes []byte
-	if h.Logger != nil && h.Logger.DebugEnabled() && r.Body != nil {
-		// debug 模式才读取请求体用于日志，默认运行不记录用户转发内容。
+	var chatSummary chatRequestSummary
+	if h.shouldInspectRequest(isChatCompletion) && r.Body != nil {
+		// debug 模式只解析请求摘要；完整请求体必须显式开启 debug-full-request。
 		bodyBytes, _ = io.ReadAll(r.Body)
 		body = bytes.NewReader(bodyBytes)
+		if isChatCompletion {
+			chatSummary = summarizeChatRequest(bodyBytes)
+		}
 	}
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, body)
@@ -125,12 +130,13 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, upstreamPath s
 	applyCostrictHeaders(req.Header, cfg, r)
 
 	requestID := req.Header.Get("X-Request-ID")
-	if h.Logger != nil && h.Logger.DebugEnabled() {
+	if h.Logger != nil && h.Logger.DebugEnabled() && h.DebugFullRequest {
 		h.Logger.Debugf("forward request id=%s method=%s path=%s upstream=%s headers=%v body=%q",
 			requestID, r.Method, r.URL.Path, upstreamURL, logx.RedactHeader(req.Header), logx.TruncateBody(bodyBytes, 32*1024))
 	}
 
 	resp, err := h.httpClient().Do(req)
+	headersAt := time.Now()
 	if err != nil {
 		if h.Logger != nil {
 			h.Logger.Warnf(i18n.T("upstream request failed method=%s path=%s request_id=%s err=%v", "上游请求失败 method=%s path=%s request_id=%s err=%v"), r.Method, r.URL.Path, requestID, err)
@@ -142,11 +148,21 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, upstreamPath s
 
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	_, copyErr := io.Copy(w, resp.Body)
+	var collector *responseMetricsCollector
+	responseBody := io.Reader(resp.Body)
+	if h.Logger != nil && h.Logger.DebugEnabled() && isChatCompletion {
+		collector = newResponseMetricsCollector(start, headersAt, responseFormat(resp.Header))
+		responseBody = collector.wrap(responseBody)
+	}
+	_, copyErr := copyAndFlush(w, responseBody)
 	if h.Logger != nil {
 		if h.Logger.DebugEnabled() {
-			h.Logger.Debugf("forward response id=%s method=%s path=%s status=%d duration=%s",
-				requestID, r.Method, r.URL.Path, resp.StatusCode, time.Since(start))
+			if isChatCompletion && collector != nil {
+				h.logChatMetrics(requestID, r, resp.StatusCode, start, chatSummary, collector.finish(), len(bodyBytes), copyErr)
+			} else {
+				h.Logger.Debugf(i18n.T("forward response id=%s method=%s path=%s status=%d duration=%s", "转发响应 id=%s method=%s path=%s status=%d 总耗时=%s"),
+					requestID, r.Method, r.URL.Path, resp.StatusCode, time.Since(start))
+			}
 		} else if resp.StatusCode >= 400 {
 			h.Logger.Warnf(i18n.T("upstream returned error method=%s path=%s status=%d request_id=%s duration=%s", "上游返回错误 method=%s path=%s status=%d request_id=%s duration=%s"),
 				r.Method, r.URL.Path, resp.StatusCode, requestID, time.Since(start))
@@ -155,6 +171,39 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, upstreamPath s
 	if copyErr != nil && h.Logger != nil {
 		h.Logger.Warnf(i18n.T("failed to copy upstream response request_id=%s err=%v", "复制上游响应失败 request_id=%s err=%v"), requestID, copyErr)
 	}
+}
+
+func (h *Handler) shouldInspectRequest(isChatCompletion bool) bool {
+	return h.Logger != nil && h.Logger.DebugEnabled() && (isChatCompletion || h.DebugFullRequest)
+}
+
+func (h *Handler) logChatMetrics(requestID string, r *http.Request, status int, start time.Time, req chatRequestSummary, resp responseMetrics, inputBytes int, copyErr error) {
+	errorText := ""
+	if copyErr != nil {
+		errorText = copyErr.Error()
+	}
+	h.Logger.Debugf(i18n.T(
+		"chat metrics id=%s model=%s stream=%t status=%d messages=%d tools=%d max_tokens=%s temperature=%s top_p=%s request_bytes=%d response_bytes=%d headers_latency=%s ttfb=%s duration=%s usage=%s tps=%s copy_error=%s",
+		"对话指标 id=%s 模型=%s 流式=%t 状态=%d 消息数=%d 工具数=%d max_tokens=%s temperature=%s top_p=%s 请求字节=%d 响应字节=%d 响应头耗时=%s 首字节耗时=%s 总耗时=%s token=%s 生成速度=%s 复制错误=%s",
+	),
+		requestID,
+		valueOrUnknown(req.Model),
+		req.Stream,
+		status,
+		req.MessagesCount,
+		req.ToolsCount,
+		valueOrUnknown(req.MaxTokens),
+		valueOrUnknown(req.Temperature),
+		valueOrUnknown(req.TopP),
+		inputBytes,
+		resp.Bytes,
+		formatDuration(resp.HeadersLatency),
+		formatDuration(resp.TTFB),
+		formatDuration(resp.Duration),
+		resp.Usage.String(),
+		resp.TokensPerSecond(),
+		valueOrNone(errorText),
+	)
 }
 
 func applyCostrictHeaders(h http.Header, cfg config.Config, incoming *http.Request) {

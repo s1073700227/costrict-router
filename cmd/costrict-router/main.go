@@ -68,9 +68,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, i18n.T(`Usage:
   costrict-router login --base-url https://example.com
   costrict-router login --url <plugin-login-url>
-  costrict-router serve [--addr 127.0.0.1:14567] [--debug]
+  costrict-router serve [--addr 127.0.0.1:14567] [--debug] [--debug-full-request]
   costrict-router models [--json]
-  costrict-router start [--debug]
+  costrict-router start [--debug] [--debug-full-request]
   costrict-router stop
   costrict-router status
   costrict-router restart
@@ -78,9 +78,9 @@ func usage() {
   costrict-router key reset`, `用法:
   costrict-router login --base-url https://example.com
   costrict-router login --url <plugin-login-url>
-  costrict-router serve [--addr 127.0.0.1:14567] [--debug]
+  costrict-router serve [--addr 127.0.0.1:14567] [--debug] [--debug-full-request]
   costrict-router models [--json]
-  costrict-router start [--debug]
+  costrict-router start [--debug] [--debug-full-request]
   costrict-router stop
   costrict-router status
   costrict-router restart
@@ -190,9 +190,10 @@ func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", "", i18n.T("listen address", "监听地址"))
 	configPath := fs.String("config", "", i18n.T("config file path", "配置文件路径"))
-	debug := fs.Bool("debug", false, i18n.T("log forwarded request details", "记录转发请求详情"))
+	debug := fs.Bool("debug", false, i18n.T("log chat metrics", "记录对话指标"))
+	debugFullRequest := fs.Bool("debug-full-request", false, i18n.T("log redacted forwarded request headers and body", "记录脱敏后的转发请求头和请求体"))
 	logFile := fs.String("log-file", "", i18n.T("log file path", "日志文件路径"))
-	noModels := fs.Bool("no-models", false, i18n.T("do not print model list on startup", "启动时不输出模型列表"))
+	fs.Bool("no-models", false, i18n.T("deprecated; model list is no longer printed on startup", "已废弃；启动时不再输出模型列表"))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -207,23 +208,22 @@ func cmdServe(args []string) error {
 	if _, err := ensureLocalAPIKey(path, cfg, os.Stdout); err != nil {
 		return err
 	}
-	logger, closeLogger, err := buildLogger(*logFile, *debug)
+	debugEnabled := *debug || *debugFullRequest
+	logger, closeLogger, err := buildLogger(*logFile, debugEnabled)
 	if err != nil {
 		return err
 	}
 	defer closeLogger()
 	logger.Infof(i18n.T("Config file: %s", "配置文件: %s"), path)
-	if *debug {
-		logger.Warnf(i18n.T("debug is enabled; forwarded request summaries and truncated bodies will be logged with secrets redacted", "debug 已开启，将记录转发请求摘要和截断后的请求体，敏感认证信息会脱敏"))
+	if debugEnabled {
+		logger.Warnf(i18n.T("debug is enabled; chat metrics will be logged", "debug 已开启，将记录对话指标"))
 	}
-	if !*noModels {
-		if err := printStartupModels(context.Background(), path, *cfg, logger, os.Stdout); err != nil {
-			logger.Warnf(i18n.T("failed to fetch model list on startup: %v", "启动时获取模型列表失败: %v"), err)
-		}
+	if *debugFullRequest {
+		logger.Warnf(i18n.T("debug-full-request is enabled; redacted forwarded request headers and truncated bodies will be logged", "debug-full-request 已开启，将记录脱敏后的转发请求头和截断请求体"))
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return server.Run(ctx, path, *cfg, *addr, logger)
+	return server.Run(ctx, path, *cfg, *addr, logger, *debugFullRequest)
 }
 
 func cmdModels(args []string) error {
@@ -276,7 +276,8 @@ func cmdStart(args []string) error {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	addr := fs.String("addr", "", i18n.T("listen address", "监听地址"))
 	configPath := fs.String("config", "", i18n.T("config file path", "配置文件路径"))
-	debug := fs.Bool("debug", false, i18n.T("log forwarded request details", "记录转发请求详情"))
+	debug := fs.Bool("debug", false, i18n.T("log chat metrics", "记录对话指标"))
+	debugFullRequest := fs.Bool("debug-full-request", false, i18n.T("log redacted forwarded request headers and body", "记录脱敏后的转发请求头和请求体"))
 	logPath := fs.String("log-file", "", i18n.T("log file path", "日志文件路径"))
 	pidPath := fs.String("pid-file", "", i18n.T("PID file path", "PID 文件路径"))
 	if err := fs.Parse(args); err != nil {
@@ -326,8 +327,11 @@ func cmdStart(args []string) error {
 		return err
 	}
 	childArgs := []string{"serve", "--config", path, "--addr", *addr, "--log-file", *logPath, "--no-models"}
-	if *debug {
+	if *debug || *debugFullRequest {
 		childArgs = append(childArgs, "--debug")
+	}
+	if *debugFullRequest {
+		childArgs = append(childArgs, "--debug-full-request")
 	}
 	if err := os.MkdirAll(filepath.Dir(*logPath), 0o700); err != nil {
 		return err
@@ -432,7 +436,8 @@ func cmdRestart(args []string) error {
 	fs := flag.NewFlagSet("restart", flag.ContinueOnError)
 	addr := fs.String("addr", "", i18n.T("listen address", "监听地址"))
 	configPath := fs.String("config", "", i18n.T("config file path", "配置文件路径"))
-	debug := fs.Bool("debug", false, i18n.T("log forwarded request details", "记录转发请求详情"))
+	debug := fs.Bool("debug", false, i18n.T("log chat metrics", "记录对话指标"))
+	debugFullRequest := fs.Bool("debug-full-request", false, i18n.T("log redacted forwarded request headers and body", "记录脱敏后的转发请求头和请求体"))
 	logPath := fs.String("log-file", "", i18n.T("log file path", "日志文件路径"))
 	pidPath := fs.String("pid-file", "", i18n.T("PID file path", "PID 文件路径"))
 	if err := fs.Parse(args); err != nil {
@@ -460,6 +465,9 @@ func cmdRestart(args []string) error {
 	}
 	if *debug {
 		startArgs = append(startArgs, "--debug")
+	}
+	if *debugFullRequest {
+		startArgs = append(startArgs, "--debug-full-request")
 	}
 	return cmdStart(startArgs)
 }
@@ -559,22 +567,6 @@ func fetchModels(ctx context.Context, cfg config.Config) ([]byte, error) {
 		return nil, fmt.Errorf(i18n.T("failed to fetch models: HTTP %d %s", "获取模型失败: HTTP %d %s"), resp.StatusCode, string(body))
 	}
 	return body, nil
-}
-
-func printStartupModels(ctx context.Context, configPath string, cfg config.Config, logger *logx.Logger, out io.Writer) error {
-	if out == nil {
-		out = io.Discard
-	}
-	svc := server.New(configPath, cfg, logger)
-	if err := svc.EnsureFreshToken(ctx); err != nil {
-		return err
-	}
-	raw, err := fetchModels(ctx, svc.Config())
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(out, i18n.T("\n📚 Available models", "\n📚 可用模型"))
-	return printModelsTo(out, raw)
 }
 
 func printModels(raw []byte) error {
