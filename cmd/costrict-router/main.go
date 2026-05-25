@@ -51,6 +51,8 @@ func main() {
 		err = cmdRestart(os.Args[2:])
 	case "logs":
 		err = cmdLogs(os.Args[2:])
+	case "key":
+		err = cmdKey(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -66,22 +68,24 @@ func usage() {
 	fmt.Fprintln(os.Stderr, i18n.T(`Usage:
   costrict-router login --base-url https://example.com
   costrict-router login --url <plugin-login-url>
-  costrict-router serve [--addr 127.0.0.1:14567] [--debug]
+  costrict-router serve [--addr 127.0.0.1:14567] [--debug] [--debug-full-request]
   costrict-router models [--json]
-  costrict-router start [--debug]
+  costrict-router start [--debug] [--debug-full-request]
   costrict-router stop
   costrict-router status
   costrict-router restart
-  costrict-router logs`, `用法:
+  costrict-router logs
+  costrict-router key reset`, `用法:
   costrict-router login --base-url https://example.com
   costrict-router login --url <plugin-login-url>
-  costrict-router serve [--addr 127.0.0.1:14567] [--debug]
+  costrict-router serve [--addr 127.0.0.1:14567] [--debug] [--debug-full-request]
   costrict-router models [--json]
-  costrict-router start [--debug]
+  costrict-router start [--debug] [--debug-full-request]
   costrict-router stop
   costrict-router status
   costrict-router restart
-  costrict-router logs`))
+  costrict-router logs
+  costrict-router key reset`))
 }
 
 func cmdLogin(args []string) error {
@@ -186,9 +190,10 @@ func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", "", i18n.T("listen address", "监听地址"))
 	configPath := fs.String("config", "", i18n.T("config file path", "配置文件路径"))
-	debug := fs.Bool("debug", false, i18n.T("log forwarded request details", "记录转发请求详情"))
+	debug := fs.Bool("debug", false, i18n.T("log chat metrics", "记录对话指标"))
+	debugFullRequest := fs.Bool("debug-full-request", false, i18n.T("log redacted forwarded request headers and body", "记录脱敏后的转发请求头和请求体"))
 	logFile := fs.String("log-file", "", i18n.T("log file path", "日志文件路径"))
-	noModels := fs.Bool("no-models", false, i18n.T("do not print model list on startup", "启动时不输出模型列表"))
+	fs.Bool("no-models", false, i18n.T("deprecated; model list is no longer printed on startup", "已废弃；启动时不再输出模型列表"))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -200,23 +205,25 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	logger, closeLogger, err := buildLogger(*logFile, *debug)
+	if _, err := ensureLocalAPIKey(path, cfg, os.Stdout); err != nil {
+		return err
+	}
+	debugEnabled := *debug || *debugFullRequest
+	logger, closeLogger, err := buildLogger(*logFile, debugEnabled)
 	if err != nil {
 		return err
 	}
 	defer closeLogger()
 	logger.Infof(i18n.T("Config file: %s", "配置文件: %s"), path)
-	if *debug {
-		logger.Warnf(i18n.T("debug is enabled; forwarded request summaries and truncated bodies will be logged with secrets redacted", "debug 已开启，将记录转发请求摘要和截断后的请求体，敏感认证信息会脱敏"))
+	if debugEnabled {
+		logger.Warnf(i18n.T("debug is enabled; chat metrics will be logged", "debug 已开启，将记录对话指标"))
 	}
-	if !*noModels {
-		if err := printStartupModels(context.Background(), path, *cfg, logger, os.Stdout); err != nil {
-			logger.Warnf(i18n.T("failed to fetch model list on startup: %v", "启动时获取模型列表失败: %v"), err)
-		}
+	if *debugFullRequest {
+		logger.Warnf(i18n.T("debug-full-request is enabled; redacted forwarded request headers and truncated bodies will be logged", "debug-full-request 已开启，将记录脱敏后的转发请求头和截断请求体"))
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return server.Run(ctx, path, *cfg, *addr, logger)
+	return server.Run(ctx, path, *cfg, *addr, logger, *debugFullRequest)
 }
 
 func cmdModels(args []string) error {
@@ -269,7 +276,8 @@ func cmdStart(args []string) error {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	addr := fs.String("addr", "", i18n.T("listen address", "监听地址"))
 	configPath := fs.String("config", "", i18n.T("config file path", "配置文件路径"))
-	debug := fs.Bool("debug", false, i18n.T("log forwarded request details", "记录转发请求详情"))
+	debug := fs.Bool("debug", false, i18n.T("log chat metrics", "记录对话指标"))
+	debugFullRequest := fs.Bool("debug-full-request", false, i18n.T("log redacted forwarded request headers and body", "记录脱敏后的转发请求头和请求体"))
 	logPath := fs.String("log-file", "", i18n.T("log file path", "日志文件路径"))
 	pidPath := fs.String("pid-file", "", i18n.T("PID file path", "PID 文件路径"))
 	if err := fs.Parse(args); err != nil {
@@ -302,8 +310,16 @@ func cmdStart(args []string) error {
 		// 已有 PID 时用健康检查确认真实存活，避免重复启动占用同一端口。
 		if health, err := fetchHealth(running.Addr); err == nil {
 			fmt.Printf(i18n.T("🟢 Service already running: http://%s/v1\n%s\n", "🟢 服务已在运行: http://%s/v1\n%s\n"), running.Addr, health)
+			if cfg.LocalAPIKeyHash != "" {
+				fmt.Println(i18n.T("Local API Key is already configured; if you lost it, run: costrict-router key reset", "本地 API Key 已配置；如已遗失，请执行: costrict-router key reset"))
+			} else {
+				fmt.Println(i18n.T("Local API Key is not configured for this config; restart the service to generate and enable one.", "当前配置尚未生成本地 API Key；请重启服务以生成并启用。"))
+			}
 			return nil
 		}
+	}
+	if _, err := ensureLocalAPIKey(path, cfg, os.Stdout); err != nil {
+		return err
 	}
 
 	exe, err := os.Executable()
@@ -311,8 +327,11 @@ func cmdStart(args []string) error {
 		return err
 	}
 	childArgs := []string{"serve", "--config", path, "--addr", *addr, "--log-file", *logPath, "--no-models"}
-	if *debug {
+	if *debug || *debugFullRequest {
 		childArgs = append(childArgs, "--debug")
+	}
+	if *debugFullRequest {
+		childArgs = append(childArgs, "--debug-full-request")
 	}
 	if err := os.MkdirAll(filepath.Dir(*logPath), 0o700); err != nil {
 		return err
@@ -417,7 +436,8 @@ func cmdRestart(args []string) error {
 	fs := flag.NewFlagSet("restart", flag.ContinueOnError)
 	addr := fs.String("addr", "", i18n.T("listen address", "监听地址"))
 	configPath := fs.String("config", "", i18n.T("config file path", "配置文件路径"))
-	debug := fs.Bool("debug", false, i18n.T("log forwarded request details", "记录转发请求详情"))
+	debug := fs.Bool("debug", false, i18n.T("log chat metrics", "记录对话指标"))
+	debugFullRequest := fs.Bool("debug-full-request", false, i18n.T("log redacted forwarded request headers and body", "记录脱敏后的转发请求头和请求体"))
 	logPath := fs.String("log-file", "", i18n.T("log file path", "日志文件路径"))
 	pidPath := fs.String("pid-file", "", i18n.T("PID file path", "PID 文件路径"))
 	if err := fs.Parse(args); err != nil {
@@ -445,6 +465,9 @@ func cmdRestart(args []string) error {
 	}
 	if *debug {
 		startArgs = append(startArgs, "--debug")
+	}
+	if *debugFullRequest {
+		startArgs = append(startArgs, "--debug-full-request")
 	}
 	return cmdStart(startArgs)
 }
@@ -476,6 +499,46 @@ func cmdLogs(args []string) error {
 	return followLog(*logPath, offset, *plain)
 }
 
+func cmdKey(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf(i18n.T("usage: costrict-router key reset [--config path]", "用法: costrict-router key reset [--config path]"))
+	}
+	switch args[0] {
+	case "reset":
+		return cmdKeyReset(args[1:])
+	default:
+		return fmt.Errorf(i18n.T("unknown key command: %s", "未知 key 命令: %s"), args[0])
+	}
+}
+
+func cmdKeyReset(args []string) error {
+	fs := flag.NewFlagSet("key reset", flag.ContinueOnError)
+	configPath := fs.String("config", "", i18n.T("config file path", "配置文件路径"))
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	path, err := resolveConfigPath(*configPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	apiKey, err := resetLocalAPIKey(path, cfg)
+	if err != nil {
+		return err
+	}
+	fmt.Printf(i18n.T("Local API Key reset. Save it now; it will not be shown again:\n%s\n", "本地 API Key 已重置。请立即保存，它不会再次显示：\n%s\n"), apiKey)
+	fmt.Printf(i18n.T("Config file: %s\n", "配置文件: %s\n"), path)
+	if pidPath, err := config.DefaultPIDPath(); err == nil {
+		if state, err := readDaemonState(pidPath); err == nil && state.ConfigPath == path {
+			fmt.Printf(i18n.T("A service using this config appears to be running at http://%s/v1; restart it for the new key to take effect.\n", "检测到使用该配置的服务可能正在运行: http://%s/v1；请重启服务后新 key 才会生效。\n"), state.Addr)
+		}
+	}
+	return nil
+}
+
 func fetchModels(ctx context.Context, cfg config.Config) ([]byte, error) {
 	// 直接请求 CoStrict 模型列表接口，供 models 命令和前台启动提示复用。
 	base, err := url.Parse(strings.TrimRight(cfg.BaseURL, "/"))
@@ -504,22 +567,6 @@ func fetchModels(ctx context.Context, cfg config.Config) ([]byte, error) {
 		return nil, fmt.Errorf(i18n.T("failed to fetch models: HTTP %d %s", "获取模型失败: HTTP %d %s"), resp.StatusCode, string(body))
 	}
 	return body, nil
-}
-
-func printStartupModels(ctx context.Context, configPath string, cfg config.Config, logger *logx.Logger, out io.Writer) error {
-	if out == nil {
-		out = io.Discard
-	}
-	svc := server.New(configPath, cfg, logger)
-	if err := svc.EnsureFreshToken(ctx); err != nil {
-		return err
-	}
-	raw, err := fetchModels(ctx, svc.Config())
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(out, i18n.T("\n📚 Available models", "\n📚 可用模型"))
-	return printModelsTo(out, raw)
 }
 
 func printModels(raw []byte) error {
@@ -557,6 +604,34 @@ func buildLogger(logFile string, debug bool) (*logx.Logger, func(), error) {
 		return nil, func() {}, err
 	}
 	return logger, func() { _ = logger.Close() }, nil
+}
+
+func ensureLocalAPIKey(path string, cfg *config.Config, out io.Writer) (string, error) {
+	if cfg.LocalAPIKeyHash != "" {
+		return "", nil
+	}
+	apiKey, err := resetLocalAPIKey(path, cfg)
+	if err != nil {
+		return "", err
+	}
+	if out != nil {
+		fmt.Fprintf(out, i18n.T("Local API Key generated. Save it now; it will not be shown again:\n%s\n", "已生成本地 API Key。请立即保存，它不会再次显示：\n%s\n"), apiKey)
+	}
+	return apiKey, nil
+}
+
+func resetLocalAPIKey(path string, cfg *config.Config) (string, error) {
+	apiKey, err := config.GenerateLocalAPIKey()
+	if err != nil {
+		return "", err
+	}
+	if err := cfg.SetLocalAPIKey(apiKey); err != nil {
+		return "", err
+	}
+	if err := cfg.Save(path); err != nil {
+		return "", err
+	}
+	return apiKey, nil
 }
 
 func resolvePIDPath(path string) (string, error) {

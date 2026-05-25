@@ -115,7 +115,7 @@ func (s *Service) nextRefreshDelay() time.Duration {
 	return delay
 }
 
-func Run(ctx context.Context, configPath string, cfg config.Config, addr string, logger *logx.Logger) error {
+func Run(ctx context.Context, configPath string, cfg config.Config, addr string, logger *logx.Logger, debugFullRequest bool) error {
 	// 组装本地 HTTP 服务、代理 handler 和优雅关闭入口，是 serve/start 的公共运行核心。
 	if addr != "" {
 		cfg.ListenAddr = addr
@@ -127,9 +127,10 @@ func Run(ctx context.Context, configPath string, cfg config.Config, addr string,
 	svc.StartRefreshLoop(ctx)
 
 	handler := &proxy.Handler{
-		Tokens: svc,
-		Client: &http.Client{},
-		Logger: logger,
+		Tokens:           svc,
+		Client:           &http.Client{},
+		Logger:           logger,
+		DebugFullRequest: debugFullRequest,
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

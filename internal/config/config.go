@@ -27,6 +27,8 @@ type Config struct {
 	URIScheme             string    `json:"uri_scheme"`
 	AccessToken           string    `json:"access_token"`
 	RefreshToken          string    `json:"refresh_token"`
+	LocalAPIKeyHash       string    `json:"local_api_key_hash,omitempty"`
+	LocalAPIKeyCreatedAt  time.Time `json:"local_api_key_created_at,omitempty"`
 	UserID                string    `json:"user_id"`
 	AccessTokenExpiresAt  time.Time `json:"access_token_expires_at,omitempty"`
 	RefreshTokenExpiresAt time.Time `json:"refresh_token_expires_at,omitempty"`
