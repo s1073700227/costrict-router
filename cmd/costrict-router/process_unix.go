@@ -8,5 +8,6 @@ import (
 )
 
 func detachProcess(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Setsid 创建新的 session，避免终端关闭时通过控制终端影响后台服务。
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
